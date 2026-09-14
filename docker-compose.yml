@@ -1,0 +1,11 @@
+services:
+  edge-agent:
+    build:
+      context: .
+
+    container_name: edge-agent
+
+    restart: unless-stopped
+
+    volumes:
+      - ./config.yaml:/etc/edge-agent/config.yaml:ro

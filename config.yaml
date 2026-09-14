@@ -1,0 +1,14 @@
+dns_control:
+  url: "http://127.0.0.1:8080"
+  token: "CHANGE-ME"
+
+agent:
+  id: "edge-agent-01"
+  interval: 10s
+
+edge:
+  addresses:
+    - "185.80.196.100"
+    - "185.80.196.101"
+    - "185.80.196.102"
+
