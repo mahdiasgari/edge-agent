@@ -3,6 +3,7 @@ module github.com/wraplink/edge-agent
 go 1.26
 
 require (
+	github.com/google/nftables v0.3.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

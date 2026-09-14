@@ -43,6 +43,7 @@ func New(
 	dnsClient *client.Client,
 	sniAllocator allocator.SNIAllocator,
 	routeAllocator allocator.RouteAllocator,
+	dataplaneManager *dataplane.Manager,
 ) *Agent {
 	return &Agent{
 		id:            id,
@@ -54,6 +55,8 @@ func New(
 
 		sniAllocator:   sniAllocator,
 		routeAllocator: routeAllocator,
+
+		dataplane: dataplaneManager,
 
 		active: make(map[string]client.Lease),
 	}
@@ -114,7 +117,7 @@ func (a *Agent) register(
 func (a *Agent) cycle(
 	ctx context.Context,
 ) error {
-	// Renew leases first.
+	// Renew existing leases first.
 	if err := a.sendHeartbeat(ctx); err != nil {
 		log.Printf(
 			"agent: heartbeat failed: %v",
@@ -122,7 +125,6 @@ func (a *Agent) cycle(
 		)
 	}
 
-	// Ask dns-control for new work.
 	max := a.availableSlots()
 
 	if max <= 0 {
@@ -163,7 +165,6 @@ func (a *Agent) cycle(
 				err,
 			)
 
-			// Tell dns-control that allocation failed.
 			if reportErr := a.reportFailure(
 				ctx,
 				lease,
@@ -209,7 +210,6 @@ func (a *Agent) processSNILease(
 	ctx context.Context,
 	lease client.Lease,
 ) error {
-	// Protect against accidentally exceeding our configured capacity.
 	if a.countActive(TypeSNI) >= a.sniCapacity {
 		return fmt.Errorf(
 			"SNI capacity exhausted",
@@ -239,8 +239,6 @@ func (a *Agent) processSNILease(
 		ctx,
 		report,
 	); err != nil {
-		// DNS-control did not accept the allocation.
-		// Release the resource we just allocated.
 		if releaseErr := a.sniAllocator.Release(
 			ctx,
 			lease.Domain,
@@ -259,16 +257,21 @@ func (a *Agent) processSNILease(
 		)
 	}
 
+	// Store the actual allocated values.
+	activeLease := lease
+	activeLease.Address = result.Address
+	activeLease.SNI = result.SNI
+
 	a.mu.Lock()
-	a.active[lease.ID] = lease
+	a.active[lease.ID] = activeLease
 	a.mu.Unlock()
 
 	log.Printf(
 		"agent: SNI active domain=%s address=%s sni=%s lease=%s",
-		lease.Domain,
-		result.Address,
-		result.SNI,
-		lease.ID,
+		activeLease.Domain,
+		activeLease.Address,
+		activeLease.SNI,
+		activeLease.ID,
 	)
 
 	return nil
@@ -289,8 +292,8 @@ func (a *Agent) processRouteLease(
 		lease.Domain,
 		lease.DestinationIP,
 		lease.Protocol,
-		lease.DestinationPort,
-		lease.SourcePort,
+		lease.DestinationPortStart,
+		lease.DestinationPortEnd,
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -305,8 +308,21 @@ func (a *Agent) processRouteLease(
 	activeLease.RouteID = result.RouteID
 	activeLease.DestinationIP = result.DestinationIP
 	activeLease.Protocol = result.Protocol
-	activeLease.DestinationPort = result.DestinationPort
-	activeLease.SourcePort = result.SourcePort
+	activeLease.DestinationPortStart = result.DestinationPortStart
+	activeLease.DestinationPortEnd = result.DestinationPortEnd
+
+	// Apply dataplane before reporting ACTIVE to dns-control.
+	if a.dataplane == nil {
+		_ = a.routeAllocator.Release(
+			ctx,
+			lease.Domain,
+			result,
+		)
+
+		return fmt.Errorf(
+			"dataplane manager is nil",
+		)
+	}
 
 	if err := a.dataplane.Apply(
 		ctx,
@@ -329,23 +345,15 @@ func (a *Agent) processRouteLease(
 		LeaseID: lease.ID,
 		Success: true,
 
-		Address: result.Address,
-
-		RouteID: result.RouteID,
-
-		DestinationIP: result.DestinationIP,
-
-		Protocol: result.Protocol,
-
-		DestinationPort: result.DestinationPort,
-
-		SourcePort: result.SourcePort,
+		Address: activeLease.Address,
+		RouteID: activeLease.RouteID,
 	}
 
 	if err := a.dnsClient.Report(
 		ctx,
 		report,
 	); err != nil {
+		// dns-control did not accept the allocation.
 		_ = a.dataplane.Remove(
 			ctx,
 			lease.ID,
@@ -368,12 +376,15 @@ func (a *Agent) processRouteLease(
 	a.mu.Unlock()
 
 	log.Printf(
-		"agent: route active domain=%s address=%s destination=%s:%d protocol=%s route_id=%s lease=%s",
+		"agent: route active domain=%s address=%s destination=%s protocol=%s ports=%s route_id=%s lease=%s",
 		activeLease.Domain,
 		activeLease.Address,
 		activeLease.DestinationIP,
-		activeLease.DestinationPort,
 		activeLease.Protocol,
+		formatPortRange(
+			activeLease.DestinationPortStart,
+			activeLease.DestinationPortEnd,
+		),
 		activeLease.RouteID,
 		activeLease.ID,
 	)
@@ -400,7 +411,11 @@ func (a *Agent) sendHeartbeat(
 ) error {
 	a.mu.RLock()
 
-	leaseIDs := make([]string, 0, len(a.active))
+	leaseIDs := make(
+		[]string,
+		0,
+		len(a.active),
+	)
 
 	for id := range a.active {
 		leaseIDs = append(
@@ -468,4 +483,26 @@ func (a *Agent) countActive(
 	}
 
 	return count
+}
+
+func formatPortRange(
+	start uint16,
+	end uint16,
+) string {
+	if start == 0 && end == 0 {
+		return "all"
+	}
+
+	if start == end {
+		return fmt.Sprintf(
+			"%d",
+			start,
+		)
+	}
+
+	return fmt.Sprintf(
+		"%d-%d",
+		start,
+		end,
+	)
 }

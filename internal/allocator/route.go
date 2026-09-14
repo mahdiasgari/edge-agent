@@ -40,8 +40,8 @@ func (a *Route) Allocate(
 	domain string,
 	destinationIP string,
 	protocol string,
-	destinationPort uint16,
-	sourcePort uint16,
+	destinationPortStart uint16,
+	destinationPortEnd uint16,
 ) (Result, error) {
 	domain = normalize(domain)
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
@@ -67,10 +67,30 @@ func (a *Route) Allocate(
 		)
 	}
 
-	if destinationPort == 0 {
-		return Result{}, fmt.Errorf(
-			"destination port is required",
-		)
+	// 0/0 means all destination ports.
+	if destinationPortStart == 0 &&
+		destinationPortEnd == 0 {
+		// Valid: all ports.
+	} else {
+		if destinationPortStart == 0 {
+			return Result{}, fmt.Errorf(
+				"destination port start cannot be 0 when a port range is specified",
+			)
+		}
+
+		if destinationPortEnd == 0 {
+			return Result{}, fmt.Errorf(
+				"destination port end cannot be 0 when a port range is specified",
+			)
+		}
+
+		if destinationPortStart > destinationPortEnd {
+			return Result{}, fmt.Errorf(
+				"invalid destination port range %d-%d",
+				destinationPortStart,
+				destinationPortEnd,
+			)
+		}
 	}
 
 	a.mu.Lock()
@@ -80,8 +100,8 @@ func (a *Route) Allocate(
 		domain,
 		destinationIP,
 		protocol,
-		destinationPort,
-		sourcePort,
+		destinationPortStart,
+		destinationPortEnd,
 	)
 
 	if result, ok := a.assigned[key]; ok {
@@ -99,12 +119,12 @@ func (a *Route) Allocate(
 	address := a.addresses[index]
 
 	result := Result{
-		Address:         address,
-		RouteID:         "route-" + hashString(key),
-		DestinationIP:   destinationIP,
-		Protocol:        protocol,
-		DestinationPort: destinationPort,
-		SourcePort:      sourcePort,
+		Address:              address,
+		RouteID:              "route-" + hashString(key),
+		DestinationIP:        destinationIP,
+		Protocol:             protocol,
+		DestinationPortStart: destinationPortStart,
+		DestinationPortEnd:   destinationPortEnd,
 	}
 
 	a.assigned[key] = result
@@ -123,8 +143,8 @@ func (a *Route) Release(
 		domain,
 		result.DestinationIP,
 		result.Protocol,
-		result.DestinationPort,
-		result.SourcePort,
+		result.DestinationPortStart,
+		result.DestinationPortEnd,
 	)
 
 	a.mu.Lock()
@@ -139,15 +159,15 @@ func routeKey(
 	domain string,
 	destinationIP string,
 	protocol string,
-	destinationPort uint16,
-	sourcePort uint16,
+	destinationPortStart uint16,
+	destinationPortEnd uint16,
 ) string {
 	return fmt.Sprintf(
 		"%s|%s|%s|%d|%d",
 		domain,
 		destinationIP,
 		protocol,
-		destinationPort,
-		sourcePort,
+		destinationPortStart,
+		destinationPortEnd,
 	)
 }

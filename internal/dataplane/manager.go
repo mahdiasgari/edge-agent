@@ -18,7 +18,6 @@ type Manager struct {
 
 func NewManager() (*Manager, error) {
 	nft, err := NewNFT()
-
 	if err != nil {
 		return nil, err
 	}
@@ -33,8 +32,17 @@ func (m *Manager) Apply(
 	ctx context.Context,
 	lease client.Lease,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Only route leases are handled by nftables.
 	if lease.Type != "route" {
 		return nil
+	}
+
+	if lease.ID == "" {
+		return fmt.Errorf("lease id is required")
 	}
 
 	if lease.Address == "" {
@@ -60,16 +68,47 @@ func (m *Manager) Apply(
 		)
 	}
 
-	if lease.DestinationPort == 0 {
-		return fmt.Errorf(
-			"lease %s has no destination port",
-			lease.ID,
-		)
+	// Port semantics:
+	//
+	// 0 / 0
+	//     = all destination ports
+	//
+	// start / end
+	//     = match destination port range
+	//
+	// The original destination port is preserved by DNAT.
+	if lease.DestinationPortStart != 0 ||
+		lease.DestinationPortEnd != 0 {
+
+		if lease.DestinationPortStart == 0 {
+			return fmt.Errorf(
+				"lease %s has invalid destination port range: start is 0",
+				lease.ID,
+			)
+		}
+
+		if lease.DestinationPortEnd == 0 {
+			return fmt.Errorf(
+				"lease %s has invalid destination port range: end is 0",
+				lease.ID,
+			)
+		}
+
+		if lease.DestinationPortStart >
+			lease.DestinationPortEnd {
+			return fmt.Errorf(
+				"lease %s has invalid destination port range: %d-%d",
+				lease.ID,
+				lease.DestinationPortStart,
+				lease.DestinationPortEnd,
+			)
+		}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Already applied.
 	if _, exists := m.active[lease.ID]; exists {
 		return nil
 	}
@@ -79,7 +118,8 @@ func (m *Manager) Apply(
 		lease,
 	); err != nil {
 		return fmt.Errorf(
-			"add nft route: %w",
+			"add nft route %s: %w",
+			lease.ID,
 			err,
 		)
 	}
@@ -93,11 +133,18 @@ func (m *Manager) Remove(
 	ctx context.Context,
 	leaseID string,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if leaseID == "" {
+		return fmt.Errorf("lease id is required")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	lease, ok := m.active[leaseID]
-
 	if !ok {
 		return nil
 	}
@@ -107,7 +154,8 @@ func (m *Manager) Remove(
 		lease,
 	); err != nil {
 		return fmt.Errorf(
-			"remove nft route: %w",
+			"remove nft route %s: %w",
+			leaseID,
 			err,
 		)
 	}

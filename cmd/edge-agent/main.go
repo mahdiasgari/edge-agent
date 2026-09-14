@@ -12,6 +12,7 @@ import (
 	"github.com/wraplink/edge-agent/internal/allocator"
 	"github.com/wraplink/edge-agent/internal/client"
 	"github.com/wraplink/edge-agent/internal/config"
+	"github.com/wraplink/edge-agent/internal/dataplane"
 )
 
 const (
@@ -92,6 +93,17 @@ func main() {
 	)
 
 	/*
+	 * nftables dataplane manager.
+	 */
+	dataplaneManager, err := dataplane.NewManager()
+	if err != nil {
+		log.Fatalf(
+			"create dataplane manager: %v",
+			err,
+		)
+	}
+
+	/*
 	 * Create edge agent.
 	 */
 	service := agent.New(
@@ -105,6 +117,8 @@ func main() {
 
 		sniAllocator,
 		routeAllocator,
+
+		dataplaneManager,
 	)
 
 	/*

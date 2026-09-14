@@ -13,9 +13,8 @@ type Result struct {
 
 	Protocol string
 
-	DestinationPort uint16
-
-	SourcePort uint16
+	DestinationPortStart uint16
+	DestinationPortEnd   uint16
 }
 
 type SNIAllocator interface {
@@ -37,8 +36,8 @@ type RouteAllocator interface {
 		domain string,
 		destinationIP string,
 		protocol string,
-		destinationPort uint16,
-		sourcePort uint16,
+		destinationPortStart uint16,
+		destinationPortEnd uint16,
 	) (Result, error)
 
 	Release(
