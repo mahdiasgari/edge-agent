@@ -3,7 +3,6 @@ package allocator
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"strings"
 	"sync"
 )
@@ -85,16 +84,4 @@ func (a *SNI) Release(
 	delete(a.assigned, domain)
 
 	return nil
-}
-
-func hash(value string) uint32 {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(value))
-	return h.Sum32()
-}
-
-func normalize(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.TrimSuffix(value, ".")
-	return strings.ToLower(value)
 }

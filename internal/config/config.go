@@ -21,8 +21,14 @@ type DNSControlConfig struct {
 }
 
 type AgentConfig struct {
-	ID       string        `yaml:"id"`
-	Interval time.Duration `yaml:"interval"`
+	ID       string         `yaml:"id"`
+	Interval time.Duration  `yaml:"interval"`
+	Capacity CapacityConfig `yaml:"capacity"`
+}
+
+type CapacityConfig struct {
+	SNI   int `yaml:"sni"`
+	Route int `yaml:"route"`
 }
 
 type EdgeConfig struct {

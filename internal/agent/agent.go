@@ -9,6 +9,7 @@ import (
 
 	"github.com/wraplink/edge-agent/internal/allocator"
 	"github.com/wraplink/edge-agent/internal/client"
+	"github.com/wraplink/edge-agent/internal/dataplane"
 )
 
 const (
@@ -27,6 +28,8 @@ type Agent struct {
 
 	sniAllocator   allocator.SNIAllocator
 	routeAllocator allocator.RouteAllocator
+
+	dataplane *dataplane.Manager
 
 	mu     sync.RWMutex
 	active map[string]client.Lease
@@ -284,6 +287,10 @@ func (a *Agent) processRouteLease(
 	result, err := a.routeAllocator.Allocate(
 		ctx,
 		lease.Domain,
+		lease.DestinationIP,
+		lease.Protocol,
+		lease.DestinationPort,
+		lease.SourcePort,
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -292,29 +299,63 @@ func (a *Agent) processRouteLease(
 		)
 	}
 
+	activeLease := lease
+
+	activeLease.Address = result.Address
+	activeLease.RouteID = result.RouteID
+	activeLease.DestinationIP = result.DestinationIP
+	activeLease.Protocol = result.Protocol
+	activeLease.DestinationPort = result.DestinationPort
+	activeLease.SourcePort = result.SourcePort
+
+	if err := a.dataplane.Apply(
+		ctx,
+		activeLease,
+	); err != nil {
+		_ = a.routeAllocator.Release(
+			ctx,
+			lease.Domain,
+			result,
+		)
+
+		return fmt.Errorf(
+			"apply route dataplane: %w",
+			err,
+		)
+	}
+
 	report := client.ReportRequest{
 		AgentID: a.id,
 		LeaseID: lease.ID,
 		Success: true,
+
 		Address: result.Address,
+
 		RouteID: result.RouteID,
+
+		DestinationIP: result.DestinationIP,
+
+		Protocol: result.Protocol,
+
+		DestinationPort: result.DestinationPort,
+
+		SourcePort: result.SourcePort,
 	}
 
 	if err := a.dnsClient.Report(
 		ctx,
 		report,
 	); err != nil {
-		if releaseErr := a.routeAllocator.Release(
+		_ = a.dataplane.Remove(
+			ctx,
+			lease.ID,
+		)
+
+		_ = a.routeAllocator.Release(
 			ctx,
 			lease.Domain,
 			result,
-		); releaseErr != nil {
-			log.Printf(
-				"agent: release route after report failure domain=%s: %v",
-				lease.Domain,
-				releaseErr,
-			)
-		}
+		)
 
 		return fmt.Errorf(
 			"report route allocation: %w",
@@ -323,15 +364,18 @@ func (a *Agent) processRouteLease(
 	}
 
 	a.mu.Lock()
-	a.active[lease.ID] = lease
+	a.active[lease.ID] = activeLease
 	a.mu.Unlock()
 
 	log.Printf(
-		"agent: route active domain=%s address=%s route_id=%s lease=%s",
-		lease.Domain,
-		result.Address,
-		result.RouteID,
-		lease.ID,
+		"agent: route active domain=%s address=%s destination=%s:%d protocol=%s route_id=%s lease=%s",
+		activeLease.Domain,
+		activeLease.Address,
+		activeLease.DestinationIP,
+		activeLease.DestinationPort,
+		activeLease.Protocol,
+		activeLease.RouteID,
+		activeLease.ID,
 	)
 
 	return nil

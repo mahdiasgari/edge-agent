@@ -3,15 +3,17 @@ package allocator
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
+	"net"
 	"strings"
 	"sync"
 )
 
 type Route struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+
 	addresses []string
-	assigned  map[string]Result
+
+	assigned map[string]Result
 }
 
 func NewRoute(addresses []string) *Route {
@@ -36,19 +38,53 @@ func NewRoute(addresses []string) *Route {
 func (a *Route) Allocate(
 	_ context.Context,
 	domain string,
+	destinationIP string,
+	protocol string,
+	destinationPort uint16,
+	sourcePort uint16,
 ) (Result, error) {
 	domain = normalize(domain)
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	destinationIP = strings.TrimSpace(destinationIP)
 
 	if domain == "" {
+		return Result{}, fmt.Errorf("domain is empty")
+	}
+
+	if net.ParseIP(destinationIP) == nil {
 		return Result{}, fmt.Errorf(
-			"domain is empty",
+			"invalid destination IP %q",
+			destinationIP,
+		)
+	}
+
+	switch protocol {
+	case "tcp", "udp":
+	default:
+		return Result{}, fmt.Errorf(
+			"unsupported protocol %q",
+			protocol,
+		)
+	}
+
+	if destinationPort == 0 {
+		return Result{}, fmt.Errorf(
+			"destination port is required",
 		)
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if result, ok := a.assigned[domain]; ok {
+	key := routeKey(
+		domain,
+		destinationIP,
+		protocol,
+		destinationPort,
+		sourcePort,
+	)
+
+	if result, ok := a.assigned[key]; ok {
 		return result, nil
 	}
 
@@ -58,16 +94,20 @@ func (a *Route) Allocate(
 		)
 	}
 
-	index := hash(domain) % uint32(len(a.addresses))
+	index := hash(key) % uint32(len(a.addresses))
 
 	address := a.addresses[index]
 
 	result := Result{
-		Address: address,
-		RouteID: "route-" + hashString(domain),
+		Address:         address,
+		RouteID:         "route-" + hashString(key),
+		DestinationIP:   destinationIP,
+		Protocol:        protocol,
+		DestinationPort: destinationPort,
+		SourcePort:      sourcePort,
 	}
 
-	a.assigned[domain] = result
+	a.assigned[key] = result
 
 	return result, nil
 }
@@ -75,24 +115,39 @@ func (a *Route) Allocate(
 func (a *Route) Release(
 	_ context.Context,
 	domain string,
-	_ Result,
+	result Result,
 ) error {
 	domain = normalize(domain)
+
+	key := routeKey(
+		domain,
+		result.DestinationIP,
+		result.Protocol,
+		result.DestinationPort,
+		result.SourcePort,
+	)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	delete(a.assigned, domain)
+	delete(a.assigned, key)
 
 	return nil
 }
 
-func hashString(value string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(value))
-
+func routeKey(
+	domain string,
+	destinationIP string,
+	protocol string,
+	destinationPort uint16,
+	sourcePort uint16,
+) string {
 	return fmt.Sprintf(
-		"%08x",
-		h.Sum32(),
+		"%s|%s|%s|%d|%d",
+		domain,
+		destinationIP,
+		protocol,
+		destinationPort,
+		sourcePort,
 	)
 }
